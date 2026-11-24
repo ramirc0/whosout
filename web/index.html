@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who's out</title>
+<style>
+@font-face { font-family: "Hanken Grotesk"; src: url("/font.ttf"); font-weight: 100 900; }
+:root {
+  color-scheme: light dark;
+  --page: #fbfaf8; --ink: #1d1d1f; --faint: #6e6e73; --rule: #e3e1dc; --weekend: #f0eee9;
+  --WFH: #4477aa; --SIC: #ee6677; --VAC: #228833; --PERS: #aa3377; --OUT: #7f7f7f;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --page: #161618; --ink: #ececec; --faint: #98989d; --rule: #2e2e32; --weekend: #1f1f22; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 28px 36px 60px; background: var(--page); color: var(--ink);
+  font: 14px/1.4 "Hanken Grotesk", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+header { display: flex; align-items: baseline; gap: 16px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; min-width: 190px; }
+h2 { font-size: 13px; font-weight: 600; margin: 36px 0 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+nav button { font: inherit; color: inherit; background: none; border: 1px solid var(--rule); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+#status { margin-left: auto; color: var(--faint); font-size: 12px; }
+#error { color: var(--SIC); white-space: pre-wrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0 0; font-size: 12px; color: var(--faint); }
+.legend b, .chip, .bar { color: #fff; font-weight: 600; border-radius: 4px; }
+.legend b { padding: 1px 6px; margin-right: 5px; font-size: 11px; }
+.WFH { background: var(--WFH); } .SIC { background: var(--SIC); } .VAC { background: var(--VAC); }
+.PERS { background: var(--PERS); } .OUT { background: var(--OUT); }
+
+#today { margin: 18px 0 28px; padding: 10px 14px; border: 1px solid var(--rule); border-radius: 8px; display: flex; gap: 28px; flex-wrap: wrap; }
+#today span { color: var(--faint); margin-right: 8px; }
+.chip { display: inline-block; padding: 1px 7px; margin: 1px 4px 1px 0; font-size: 12px; white-space: nowrap; }
+.chip small { font-weight: 400; opacity: .85; margin-left: 4px; }
+
+#roster { border-collapse: collapse; width: 100%; table-layout: fixed; }
+#roster th, #roster td { height: 28px; padding: 2px 1px; text-align: center; border-bottom: 1px solid var(--rule); }
+#roster th { font-weight: 400; font-size: 11px; color: var(--faint); line-height: 1.2; }
+#roster th b { display: block; font-size: 13px; color: var(--ink); font-weight: 500; }
+#roster .name { width: 150px; text-align: left; font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#roster .weekend { width: 10px; background: var(--weekend); padding: 0; }
+#roster .is-today { box-shadow: inset 2px 0 var(--ink), inset -2px 0 var(--ink); }
+.bar { display: block; height: 22px; line-height: 22px; font-size: 11px; letter-spacing: .03em; overflow: hidden; text-decoration: none; }
+.morning, .afternoon { width: 50%; font-size: 9px; letter-spacing: 0; }
+.afternoon { margin-left: 50%; }
+.empty { color: var(--faint); padding: 14px 0; }
+
+#review { list-style: none; padding: 0; margin: 0; }
+#review li { padding: 8px 0; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: 220px 1fr auto; gap: 14px; }
+#review .who, #review a { color: var(--faint); font-size: 12px; }
+#review .doubt { color: var(--SIC); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <nav><button id="back">‹</button> <button id="now">Today</button> <button id="forth">›</button></nav>
+  <span id="status"></span>
+</header>
+<div class="legend">
+  <span><b class="WFH">WFH</b>working from home</span>
+  <span><b class="SIC">SIC</b>sick</span>
+  <span><b class="VAC">VAC</b>vacation</span>
+  <span><b class="PERS">PERS</b>personal</span>
+  <span><b class="OUT">OUT</b>off, travel or conference</span>
+  <span>Half-width block: morning or afternoon only</span>
+</div>
+<div id="today"></div>
+<p id="error"></p>
+<table id="roster"></table>
+<h2 id="review-title"></h2>
+<ul id="review"></ul>
+
+<script>
+const iso = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const isWeekend = date => date.getDay() === 0 || date.getDay() === 6;
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const byId = id => document.getElementById(id);
+const TODAY = iso(new Date());
+
+function shownMonth() {
+  const [year, month] = (location.hash.slice(1) || TODAY).split("-").map(Number);
+  return new Date(year, month - 1, 1);
+}
+function step(months) {
+  const month = shownMonth();
+  month.setMonth(month.getMonth() + months);
+  location.hash = iso(month).slice(0, 7);
+}
+byId("back").onclick = () => step(-1);
+byId("forth").onclick = () => step(1);
+byId("now").onclick = () => { location.hash = TODAY.slice(0, 7); };
+addEventListener("hashchange", draw);
+
+function chips(box, label, blocks) {
+  const group = el("div");
+  group.append(el("span", "", label));
+  for (const block of blocks) {
+    const chip = el("b", `chip ${block.kind}`, block.person);
+    chip.append(el("small", "", block.part === "full" ? block.kind : `${block.kind} (${block.part})`));
+    chip.title = block.text;
+    group.append(chip);
+  }
+  if (!blocks.length) group.append("nobody");
+  box.append(group);
+}
+
+async function draw() {
+  const month = shownMonth();
+  const dates = [];
+  for (const date = new Date(month); date.getMonth() === month.getMonth(); date.setDate(date.getDate() + 1)) dates.push(new Date(date));
+  byId("title").textContent = month.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const first = iso(dates[0]), last = iso(dates.at(-1));
+  const from = TODAY < first ? TODAY : first, to = TODAY > last ? TODAY : last;
+  const response = await fetch(`/api/calendar?first=${from}&last=${to}`);
+  byId("error").textContent = response.ok ? "" : await response.text();
+  if (!response.ok) return;
+  const calendar = await response.json();
+
+  const synced = calendar.synced ? new Date(calendar.synced).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "never";
+  byId("status").textContent = `Synced ${synced} · ${calendar.messages} messages · ${calendar.unresolved} need review`;
+
+  const todays = calendar.days.filter(block => block.day === TODAY);
+  const strip = byId("today");
+  strip.replaceChildren();
+  chips(strip, "Out today", todays.filter(block => block.kind !== "WFH"));
+  chips(strip, "Remote today", todays.filter(block => block.kind === "WFH"));
+
+  const rows = new Map();
+  for (const block of calendar.days) {
+    if (block.day < first || block.day > last) continue;
+    if (!rows.has(block.person)) rows.set(block.person, new Map());
+    rows.get(block.person).set(block.day, block);
+  }
+  const roster = byId("roster");
+  roster.replaceChildren();
+  const head = el("tr");
+  head.append(el("th", "name"));
+  for (const date of dates) {
+    if (isWeekend(date)) { head.append(el("th", "weekend")); continue; }
+    const th = el("th", iso(date) === TODAY ? "is-today" : "", "SMTWTFS"[date.getDay()]);
+    th.append(el("b", "", date.getDate()));
+    head.append(th);
+  }
+  roster.append(head);
+  for (const [person, blocks] of [...rows].sort(([a], [b]) => a.localeCompare(b))) {
+    const row = el("tr");
+    row.append(el("td", "name", person));
+    for (let i = 0; i < dates.length; i++) {
+      if (isWeekend(dates[i])) { row.append(el("td", "weekend")); continue; }
+      const block = blocks.get(iso(dates[i]));
+      const continues = j => {
+        const next = j < dates.length && !isWeekend(dates[j]) && blocks.get(iso(dates[j]));
+        return next && next.message === block.message && next.kind === block.kind && next.part === block.part;
+      };
+      let span = 1;
+      while (block && iso(dates[i]) !== TODAY && iso(dates[i + span] ?? dates[i]) !== TODAY && continues(i + span)) span++;
+      const cell = el("td", iso(dates[i]) === TODAY ? "is-today" : "");
+      cell.colSpan = span;
+      if (block) {
+        const bar = el("a", `bar ${block.kind} ${block.part}`, block.kind);
+        bar.href = block.link;
+        bar.title = `${block.posted}\n${block.text}`;
+        cell.append(bar);
+      }
+      row.append(cell);
+      i += span - 1;
+    }
+    roster.append(row);
+  }
+  if (!rows.size) roster.after(el("p", "empty", "Nobody reported time away this month."));
+  document.querySelectorAll(".empty").forEach((note, index) => { if (rows.size || index) note.remove(); });
+
+  const pending = calendar.pending.filter(item => item.posted.slice(4, 14) >= first && item.posted.slice(4, 14) <= last);
+  byId("review-title").textContent = pending.length ? "Needs review · posted this month" : "";
+  byId("review").replaceChildren(...pending.map(item => {
+    const li = el("li");
+    li.append(el("div", "who", `${item.person} · ${item.posted}`));
+    const body = el("div", "", item.text);
+    body.append(el("div", "doubt", item.doubts.join(" · ")));
+    const link = el("a", "", "open in Slack");
+    link.href = item.link;
+    li.append(body, link);
+    return li;
+  }));
+}
+draw();
+</script>
+</body>
+</html>

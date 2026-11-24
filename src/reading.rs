@@ -42,6 +42,8 @@ pub enum Part {
     Morning,
     /// The afternoon only.
     Afternoon,
+    /// Half of the day, with no word on which half.
+    Half,
 }
 
 /// One kind of absence over an inclusive span of days.
@@ -114,15 +116,30 @@ static CODED_KINDS: LazyLock<[(Kind, Regex); 4]> = LazyLock::new(|| {
             Kind::Remote,
             pattern(r"\bwfh\b|\bwork(?:ing)?\s+(?:from|at)\s+home\b|\b(?:work(?:ing)?\s+)?remote(?:ly)?\b"),
         ),
-        (Kind::Sick, pattern(r"\bsic\b|\bsick\s+day\b")),
+        (
+            Kind::Sick,
+            pattern(r"\bsic\b|\bfamsic\b|\bsick\s+(?:day|time|hours?|leave)\b|\bout\s+sick\b"),
+        ),
         (Kind::Vacation, pattern(r"\bvac\b|\bvacation\b")),
         (Kind::Personal, pattern(r"\bpers\b|\bpersonal\b")),
     ]
 });
-static OUT: LazyLock<Regex> = LazyLock::new(|| pattern(r"\boff\b|\bout\s+of\s+(?:the\s+)?office\b|\booo\b"));
-static SLACK_ENTITY: LazyLock<Regex> = LazyLock::new(|| pattern(r"<[^>]*>"));
-static HOURS_NOTE: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b\d+\s*(?:hours?|hrs?)\b"));
-static DAY_PART: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b(?:this|in\s+the)\s+(morning|afternoon)\b"));
+static OFF: LazyLock<Regex> = LazyLock::new(|| pattern(r"\boff\b"));
+static OUT: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"\boff\b|\bout\s+of\s+(?:the\s+)?office\b|\booo\b|\b(?:be|am|i'm|im)\s+(?:out|gone|away)\b"));
+static NOISE: LazyLock<Regex> = LazyLock::new(|| pattern(r"<[^>]*>|\bgood\s+morning\b"));
+static HALF_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b1/2(\s+(?:a\s+)?day)"));
+static AMOUNT_NOTE: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"\b\d+\s*(?:hours?|hrs?|days?|vac|pers|sic)\b|\b\d+\s+(?:vacation|personal|sick)\s+(?:days?|hours?)\b"));
+static DAY_PART: LazyLock<Regex> = LazyLock::new(|| {
+    pattern(&format!(
+        r"(?x)
+        \b(?P<lead>this|in\s+the|the|today|tomorrow|(?:{WEEKDAYS})(?:day)?|\d+\)?)\s+(?P<part>morning|afternoon)\b
+        | \b(?:(?P<first>first)\s+|(?P<second>second)\s+)?(?P<half>half)(?:[\s-]+(?:a\s+)?day|\s+of\s+the\s+day)?\b"
+    ))
+});
+static WEEK: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"\b(?:all\s+)?(?:of\s+)?(?:(?:for\s+)?the\s+rest\s+of\s+)?(?P<which>this|next|the)\s+week\b"));
 static ATOM: LazyLock<Regex> = LazyLock::new(|| {
     pattern(&format!(
         r"(?x)
@@ -130,7 +147,7 @@ static ATOM: LazyLock<Regex> = LazyLock::new(|| {
         | \b(?P<month>{MONTHS}|may)\.?\s+(?P<md>\d{{1,2}})(?:st|nd|rd|th)?\b(?:,?\s+(?P<my>\d{{4}})\b)?
         | \b(?P<bare>\d{{1,2}})(?:st|nd|rd|th)?\b
         | \b(?P<rel>today|tomorrow)\b
-        | \b(?P<wd>{WEEKDAYS})(?:day)?\b"
+        | \b(?:(?:this|upcoming)\s+)*(?:(?P<next>next)\s+)?(?P<wd>{WEEKDAYS})(?:day)?\b"
     ))
 });
 static DATE_WORD: LazyLock<Regex> = LazyLock::new(|| {
@@ -145,7 +162,8 @@ static DATE_WORD: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// Returns every doubt found when the message does not fit the strict grammar.
 pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
-    let mut text = SLACK_ENTITY.replace_all(&text.to_lowercase().replace('’', "'"), " ").into_owned();
+    let text = NOISE.replace_all(&text.to_lowercase().replace('’', "'"), " ").into_owned();
+    let mut text = HALF_DAY.replace_all(&text, "half$1").into_owned();
     let mut doubts = Vec::new();
 
     let coded: Vec<Kind> = CODED_KINDS
@@ -154,31 +172,62 @@ pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
         .map(|(kind, _)| *kind)
         .collect();
     let kind = match coded[..] {
-        [kind] => Some(kind),
-        [] if OUT.is_match(&text) => Some(Kind::Out),
-        [] => {
-            doubts.push(Doubt::NoKind);
-            None
-        }
-        _ => {
-            doubts.push(Doubt::TwoKinds);
-            None
-        }
+        [Kind::Remote] if OFF.is_match(&text) => Err(Doubt::TwoKinds),
+        [kind] => Ok(kind),
+        [] if OUT.is_match(&text) => Ok(Kind::Out),
+        [] => Err(Doubt::NoKind),
+        _ => Err(Doubt::TwoKinds),
     };
-    for regex in CODED_KINDS.iter().map(|(_, regex)| regex).chain([&*OUT, &*HOURS_NOTE]) {
+    for regex in [&*AMOUNT_NOTE, &*OUT].into_iter().chain(CODED_KINDS.iter().map(|(_, regex)| regex)) {
         text = blank(&text, regex.find_iter(&text).map(|found| found.range()));
     }
 
-    let days = Days::find(&text, posted, &mut doubts);
+    let mut claims = Vec::new();
+    let mut needs_posting_day = false;
+    for found in DAY_PART.captures_iter(&text) {
+        let (claim, word) = match (found.name("part"), found.name("first"), found.name("second")) {
+            (Some(word), ..) if word.as_str() == "morning" => (Part::Morning, word),
+            (Some(word), ..) => (Part::Afternoon, word),
+            (None, Some(_), _) => (Part::Morning, found.get(0).expect("whole match")),
+            (None, None, Some(_)) => (Part::Afternoon, found.get(0).expect("whole match")),
+            (None, None, None) => (Part::Half, found.get(0).expect("whole match")),
+        };
+        needs_posting_day |= found.name("lead").is_some_and(|lead| lead.as_str().starts_with("in"));
+        claims.push((claim, word.range()));
+    }
+    let mut days = Days::find(&text, posted, &mut doubts);
     text = blank(&text, days.consumed.iter().cloned());
 
-    let mut part = Part::Full;
-    let parts: Vec<_> = DAY_PART.captures_iter(&text).collect();
-    if let [only] = &parts[..]
-        && days.spans == [(posted, posted)]
+    let weeks: Vec<_> = WEEK.captures_iter(&text).collect();
+    if let [week] = &weeks[..]
+        && days.consumed.is_empty()
     {
-        part = if &only[1] == "morning" { Part::Morning } else { Part::Afternoon };
-        text = blank(&text, [only.get(0).expect("whole match").range()]);
+        let since_monday = i64::from(posted.weekday().to_monday_zero_offset());
+        let next_monday = posted + (7 - since_monday).days();
+        if &week["which"] == "next" {
+            days.spans = vec![(next_monday, next_monday + 4.days())];
+        } else if since_monday <= 4 {
+            days.spans = vec![(posted, posted + (4 - since_monday).days())];
+        }
+        let range = week.get(0).expect("whole match").range();
+        text = blank(&text, [range]);
+    }
+
+    let mut which_half: Vec<Part> = claims
+        .iter()
+        .map(|(claim, _)| *claim)
+        .filter(|claim| *claim != Part::Half)
+        .collect();
+    which_half.dedup();
+    let mut part = Part::Full;
+    if let [(first, last)] = days.spans[..]
+        && first == last
+        && (first == posted || !needs_posting_day)
+        && !claims.is_empty()
+        && which_half.len() <= 1
+    {
+        part = which_half.first().copied().unwrap_or(Part::Half);
+        text = blank(&text, claims.into_iter().map(|(_, range)| range));
     }
 
     let unread: Vec<&str> = DATE_WORD.find_iter(&text).map(|found| found.as_str()).collect();
@@ -191,21 +240,22 @@ pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
         } else if (last - first).get_days() > 30 {
             doubts.push(Doubt::LongSpan);
         }
-        if [first, last]
-            .iter()
-            .any(|day| matches!(day.weekday(), Weekday::Saturday | Weekday::Sunday))
-        {
+        if first == last && matches!(first.weekday(), Weekday::Saturday | Weekday::Sunday) {
             doubts.push(Doubt::Weekend);
         }
     }
 
     match kind {
-        Some(kind) if doubts.is_empty() => Ok(days
+        Ok(kind) if doubts.is_empty() => Ok(days
             .spans
             .iter()
             .map(|&(first, last)| Absence { kind, first, last, part })
             .collect()),
-        _ => Err(doubts),
+        Ok(_) => Err(doubts),
+        Err(doubt) => {
+            doubts.insert(0, doubt);
+            Err(doubts)
+        }
     }
 }
 
@@ -217,6 +267,12 @@ fn blank(text: &str, ranges: impl IntoIterator<Item = std::ops::Range<usize>>) -
     String::from_utf8(bytes).expect("whole matches are blanked, so the text stays UTF-8")
 }
 
+/// A day word that has no month and day of its own.
+enum Loose {
+    Relative(Date),
+    Named(Weekday),
+}
+
 struct Days {
     spans: Vec<(Date, Date)>,
     consumed: Vec<std::ops::Range<usize>>,
@@ -224,78 +280,119 @@ struct Days {
 
 impl Days {
     fn find(text: &str, posted: Date, doubts: &mut Vec<Doubt>) -> Self {
-        let mut explicit: Vec<(Date, Date)> = Vec::new();
-        let mut relative: Vec<Date> = Vec::new();
-        let mut weekdays: Vec<Weekday> = Vec::new();
-        let mut consumed = Vec::new();
-        let mut gap = String::new();
-        let mut cursor = 0;
+        let mut dated: Vec<(Date, Date)> = Vec::new();
+        let mut loose: Vec<(Loose, bool)> = Vec::new();
+        let mut consumed: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut since_dated = String::new();
+        let mut month_is_named = false;
+        let mut previous_is_loose = false;
+        let mut names_next_weekday = false;
 
         for atom in ATOM.captures_iter(text) {
             let whole = atom.get(0).expect("whole match");
             let number = |name: &str| atom.name(name).map(|digits| digits.as_str().parse::<i16>().expect("digits"));
-            gap.push_str(&text[cursor..whole.start()]);
-            let joins_span = matches!(gap.trim_matches([' ', '(', ')', ',']), "-" | "–" | "to" | "through" | "thru");
+            let since_previous = &text[consumed.last().map_or(0, |range| range.end)..whole.start()];
+            since_dated.push_str(since_previous);
+            let joins_span = is_span_word(&since_dated);
 
             if let Some(day) = number("bare") {
-                let Some(span) = explicit.last_mut().filter(|_| joins_span) else {
+                let lists_another = month_is_named && matches!(since_dated.trim_matches([' ', ',']), "and" | "&" | "" | "and the");
+                let Some(span) = dated.last().copied().filter(|_| joins_span || lists_another) else {
                     continue;
                 };
-                match Date::new(span.0.year(), span.0.month(), i8::try_from(day).unwrap_or(0)) {
-                    Ok(last) => span.1 = last,
+                match Date::new(span.1.year(), span.1.month(), i8::try_from(day).unwrap_or(0)) {
+                    Ok(day) if joins_span => dated.last_mut().expect("span start").1 = day,
+                    Ok(day) => dated.push((day, day)),
                     Err(_) => doubts.push(Doubt::NoSuchDate),
                 }
             } else if let Some(word) = atom.name("rel") {
-                relative.push(if word.as_str() == "today" { posted } else { posted + 1.day() });
+                let day = if word.as_str() == "today" { posted } else { posted + 1.day() };
+                loose.push((Loose::Relative(day), previous_is_loose && is_span_word(since_previous)));
             } else if let Some(word) = atom.name("wd") {
-                weekdays.push(weekday_named(word.as_str()));
+                loose.push((
+                    Loose::Named(weekday_named(word.as_str())),
+                    previous_is_loose && is_span_word(since_previous),
+                ));
             } else {
                 let (month, day, year) = match atom.name("month") {
                     Some(name) => (month_named(name.as_str()), number("md"), number("my")),
                     None => (number("m").expect("numeric date"), number("d"), number("y")),
                 };
+                month_is_named = atom.name("month").is_some();
                 let year = year.map(|year| if year < 100 { year + 2000 } else { year });
-                let span_start = explicit.last().filter(|_| joins_span).map(|span| span.0);
+                let span_start = dated.last().filter(|_| joins_span).map(|span| span.0);
                 let not_before = span_start.unwrap_or(posted - 30.days());
                 match (occurrence(month, day.expect("day"), year, not_before), span_start) {
-                    (Some(last), Some(_)) => explicit.last_mut().expect("span start").1 = last,
-                    (Some(day), None) => explicit.push((day, day)),
+                    (Some(last), Some(_)) => dated.last_mut().expect("span start").1 = last,
+                    (Some(day), None) => dated.push((day, day)),
                     (None, _) => doubts.push(Doubt::NoSuchDate),
                 }
             }
-            if atom.name("rel").is_none() && atom.name("wd").is_none() {
-                gap.clear();
+            names_next_weekday |= atom.name("next").is_some();
+            previous_is_loose = atom.name("rel").is_some() || atom.name("wd").is_some();
+            if !previous_is_loose {
+                since_dated.clear();
             }
-            cursor = whole.end();
             consumed.push(whole.range());
         }
 
-        let named = |day: &Date| explicit.iter().any(|(first, last)| day == first || day == last);
-        if explicit.is_empty() {
-            if relative.is_empty() && !weekdays.is_empty() {
-                doubts.push(Doubt::UnreadDateWords("weekday with no date".into()));
-            } else if weekdays.iter().any(|weekday| !relative.iter().any(|day| day.weekday() == *weekday)) {
-                doubts.push(Doubt::WeekdayDisagrees);
+        if dated.is_empty() {
+            if names_next_weekday {
+                doubts.push(Doubt::UnreadDateWords("next".into()));
             }
-            if relative.is_empty() {
-                relative.push(posted);
+            if doubts.is_empty() {
+                dated = loose_days(loose, posted, doubts);
             }
-            explicit = relative.into_iter().map(|day| (day, day)).collect();
-        } else {
-            if !relative.iter().all(named) {
-                doubts.push(Doubt::RelativeDayDisagrees);
-            }
-            let falls_on = |weekday: &Weekday| {
-                explicit
-                    .iter()
-                    .any(|(first, last)| first.weekday() == *weekday || last.weekday() == *weekday)
-            };
-            if !weekdays.iter().all(falls_on) {
-                doubts.push(Doubt::WeekdayDisagrees);
+            return Self { spans: dated, consumed };
+        }
+        let ends_on = |fits: &dyn Fn(Date) -> bool| dated.iter().any(|&(first, last)| fits(first) || fits(last));
+        for (word, _) in &loose {
+            match word {
+                Loose::Relative(day) if !ends_on(&|end| end == *day) => doubts.push(Doubt::RelativeDayDisagrees),
+                Loose::Named(weekday) if !ends_on(&|end| end.weekday() == *weekday) => doubts.push(Doubt::WeekdayDisagrees),
+                _ => {}
             }
         }
-        Self { spans: explicit, consumed }
+        Self { spans: dated, consumed }
     }
+}
+
+fn is_span_word(between: &str) -> bool {
+    matches!(between.trim_matches([' ', '(', ')', ',']), "-" | "–" | "to" | "through" | "thru")
+}
+
+/// Turns `today`, `tomorrow` and weekday names into days when the message gives no month and day.
+///
+/// A weekday name is its next occurrence after the posting day. A message with no day word is the posting day.
+fn loose_days(loose: Vec<(Loose, bool)>, posted: Date, doubts: &mut Vec<Doubt>) -> Vec<(Date, Date)> {
+    let mut spans: Vec<(Date, Date)> = Vec::new();
+    for (word, joins_span) in loose {
+        let previous = spans.last().copied();
+        let day = match word {
+            Loose::Relative(day) => day,
+            Loose::Named(weekday) if !joins_span && previous.is_some_and(|(_, last)| last.weekday() == weekday) => continue,
+            Loose::Named(weekday) if !joins_span && weekday == posted.weekday() => {
+                doubts.push(Doubt::UnreadDateWords("weekday of the posting day".into()));
+                continue;
+            }
+            Loose::Named(weekday) => {
+                let after = previous.filter(|_| joins_span).map_or(posted, |(first, _)| first);
+                (1..=7)
+                    .map(|ahead| after + ahead.days())
+                    .find(|day| day.weekday() == weekday)
+                    .expect("a weekday recurs within 7 days")
+            }
+        };
+        match spans.last_mut() {
+            Some(span) if joins_span => span.1 = day,
+            Some(span) if *span == (day, day) => {}
+            _ => spans.push((day, day)),
+        }
+    }
+    if spans.is_empty() && doubts.is_empty() {
+        spans.push((posted, posted));
+    }
+    spans
 }
 
 /// The date with this month and day, in `year` if given, else its first occurrence on or after `not_before`.
@@ -334,6 +431,7 @@ mod tests {
 
     use super::*;
 
+    #[expect(clippy::unnecessary_wraps, reason = "compared with what `read` returns")]
     fn days(kind: Kind, spans: &[(Date, Date)]) -> Result<Vec<Absence>, Vec<Doubt>> {
         Ok(spans
             .iter()
@@ -529,7 +627,6 @@ mod tests {
         assert_eq!(read("WFH in the morning", MON_NOV_23), Ok(vec![morning]));
         assert!(read("I am WFH tomorrow, and will not be available in the morning", MON_NOV_23).is_err());
         assert!(read("taking this afternoon and tomorrow morning off", MON_NOV_23).is_err());
-        assert!(read("I will be taking the first half of the day off today", MON_NOV_23).is_err());
     }
 
     #[test]
@@ -553,12 +650,12 @@ mod tests {
             [Doubt::RelativeDayDisagrees]
         );
         assert_eq!(
-            doubts("I will be WFH all this week", date(2025, 12, 1)),
-            [Doubt::UnreadDateWords("week".into())]
+            doubts("WFH Monday", date(2025, 12, 8)),
+            [Doubt::UnreadDateWords("weekday of the posting day".into())]
         );
         assert_eq!(
-            doubts("I'll be WFH Monday.", date(2025, 12, 5)),
-            [Doubt::UnreadDateWords("weekday with no date".into())]
+            doubts("I am working from home today and I will also take Friday off.", date(2020, 2, 26)),
+            [Doubt::TwoKinds]
         );
         assert_eq!(doubts("WFH tomorrow", date(2026, 11, 20)), [Doubt::Weekend]);
         assert_eq!(doubts("VAC 2/30", date(2026, 2, 2)), [Doubt::NoSuchDate]);
@@ -567,14 +664,120 @@ mod tests {
             doubts("I took the day to rest after my shots yesterday (SIC)", MON_NOV_23)
                 .contains(&Doubt::UnreadDateWords("yesterday".into()))
         );
-        assert!(
-            doubts(
+    }
+
+    #[test]
+    fn a_weekday_with_no_date_is_its_next_occurrence() {
+        assert_eq!(read("I'll be WFH Monday.", date(2025, 12, 5)), day(Kind::Remote, date(2025, 12, 8)));
+        assert_eq!(
+            read("I will take Monday off for vacation (VAC)", date(2025, 7, 26)),
+            day(Kind::Vacation, date(2025, 7, 28))
+        );
+        assert_eq!(
+            read("I will be taking tomorrow and friday off", date(2025, 5, 21)),
+            days(
+                Kind::Out,
+                &[(date(2025, 5, 22), date(2025, 5, 22)), (date(2025, 5, 23), date(2025, 5, 23))]
+            )
+        );
+        assert_eq!(
+            read("I will work from home tomorrow (Thursday)", date(2025, 8, 27)),
+            day(Kind::Remote, date(2025, 8, 28))
+        );
+        assert_eq!(
+            read("I will be out Wed - Fri", date(2026, 6, 1)),
+            days(Kind::Out, &[(date(2026, 6, 3), date(2026, 6, 5))])
+        );
+    }
+
+    #[test]
+    fn older_phrasings() {
+        assert_eq!(
+            read("I will be out sick today (1/10)", date(2022, 1, 10)),
+            day(Kind::Sick, date(2022, 1, 10))
+        );
+        assert_eq!(
+            read("I'll be out 9/30-10/4", date(2019, 9, 20)),
+            days(Kind::Out, &[(date(2019, 9, 30), date(2019, 10, 4))])
+        );
+        assert_eq!(
+            read("I will be on vacation 1/11-1/25 (9 vacation days)", date(2020, 1, 8)),
+            days(Kind::Vacation, &[(date(2020, 1, 11), date(2020, 1, 25))])
+        );
+        assert_eq!(
+            read("I will take Aug 19 and 20 off.", date(2020, 8, 6)),
+            days(
+                Kind::Out,
+                &[(date(2020, 8, 19), date(2020, 8, 19)), (date(2020, 8, 20), date(2020, 8, 20))]
+            )
+        );
+        let afternoon = Absence {
+            kind: Kind::Sick,
+            first: date(2023, 3, 23),
+            last: date(2023, 3, 23),
+            part: Part::Afternoon,
+        };
+        assert_eq!(
+            read("I'm taking the afternoon off tomorrow (3/23), sick time", date(2023, 3, 22)),
+            Ok(vec![afternoon])
+        );
+    }
+
+    #[test]
+    fn weeks_and_half_days() {
+        assert_eq!(
+            read("I will be WFH all this week", date(2025, 12, 1)),
+            days(Kind::Remote, &[(date(2025, 12, 1), date(2025, 12, 5))])
+        );
+        assert_eq!(
+            read("I'm taking the rest of the week off", date(2023, 9, 27)),
+            days(Kind::Out, &[(date(2023, 9, 27), date(2023, 9, 29))])
+        );
+        assert_eq!(
+            read("i will be remote next week", date(2026, 8, 13)),
+            days(Kind::Remote, &[(date(2026, 8, 17), date(2026, 8, 21))])
+        );
+        assert_eq!(
+            read("I will be taking next Tuesday, June 30th off.", date(2020, 6, 25)),
+            day(Kind::Out, date(2020, 6, 30))
+        );
+        assert!(read("I will be out next Friday", date(2019, 8, 19)).is_err());
+        assert_eq!(
+            read(
                 "I will take Wednesday (Dec 17th) to next Tuesday (Dec 23th) off. 40 hours VAC.",
                 date(2025, 12, 15)
-            )
-            .iter()
-            .any(|doubt| matches!(doubt, Doubt::UnreadDateWords(_)))
+            ),
+            days(Kind::Vacation, &[(date(2025, 12, 17), date(2025, 12, 23))])
         );
+        let half = |kind, on, part| {
+            Ok(vec![Absence {
+                kind,
+                first: on,
+                last: on,
+                part,
+            }])
+        };
+        assert_eq!(
+            read("I will be taking a 1/2 day off today for a dentist appointment.", MON_NOV_23),
+            half(Kind::Out, MON_NOV_23, Part::Half)
+        );
+        assert_eq!(
+            read("I'm taking a half personal day tomorrow morning (1/8)", date(2021, 1, 7)),
+            half(Kind::Personal, date(2021, 1, 8), Part::Morning)
+        );
+        assert_eq!(
+            read("will be taking off the first half today", MON_NOV_23),
+            half(Kind::Out, MON_NOV_23, Part::Morning)
+        );
+        assert_eq!(
+            read("I am taking Wednesday (02/22) afternoon off SIC.", date(2023, 2, 20)),
+            half(Kind::Sick, date(2023, 2, 22), Part::Afternoon)
+        );
+        assert_eq!(
+            read("Good morning, I'm taking another sick day today (3/7)", date(2023, 3, 7)),
+            day(Kind::Sick, date(2023, 3, 7))
+        );
+        assert!(read("I'm at an appointment this morning and working from home in the afternoon", MON_NOV_23).is_err());
     }
 
     #[test]
