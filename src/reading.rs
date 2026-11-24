@@ -118,7 +118,7 @@ static CODED_KINDS: LazyLock<[(Kind, Regex); 4]> = LazyLock::new(|| {
         ),
         (
             Kind::Sick,
-            pattern(r"\bsic\b|\bfamsic\b|\bsick\s+(?:day|time|hours?|leave)\b|\bout\s+sick\b"),
+            pattern(r"\bsic\b|\bfamsic\b|\bsick\s+(?:days?|time|hours?|leave)\b|\bout\s+sick\b"),
         ),
         (Kind::Vacation, pattern(r"\bvac\b|\bvacation\b")),
         (Kind::Personal, pattern(r"\bpers\b|\bpersonal\b")),
@@ -138,7 +138,7 @@ static DAY_PART: LazyLock<Regex> = LazyLock::new(|| {
         | \b(?:(?P<first>first)\s+|(?P<second>second)\s+)?(?P<half>half)(?:[\s-]+(?:a\s+)?day|\s+of\s+the\s+day)?\b"
     ))
 });
-static WHOLE_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b(?:sick|vacation|personal)\s+day\b|\bday\s+off\b"));
+static WHOLE_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\bsick\s+day\b"));
 static WEEK: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"\b(?:all\s+)?(?:of\s+)?(?:(?:for\s+)?the\s+rest\s+of\s+)?(?P<which>this|next|the)\s+week\b"));
 static ATOM: LazyLock<Regex> = LazyLock::new(|| {
@@ -778,6 +778,29 @@ mod tests {
         assert_eq!(
             read("Not feeling well this morning, taking a sick day (SIC)", MON_NOV_23),
             day(Kind::Sick, MON_NOV_23)
+        );
+        let morning = Absence {
+            kind: Kind::Personal,
+            first: date(2022, 10, 4),
+            last: date(2022, 10, 4),
+            part: Part::Morning,
+        };
+        assert_eq!(
+            read(
+                "I will take next Tuesday morning off (10/04, 3 hours personal day)",
+                date(2022, 10, 2)
+            ),
+            Ok(vec![morning])
+        );
+        assert_eq!(
+            read(
+                "I tested positive, I will take Monday and Tuesday off as sick days.",
+                date(2023, 8, 27)
+            ),
+            days(
+                Kind::Sick,
+                &[(date(2023, 8, 28), date(2023, 8, 28)), (date(2023, 8, 29), date(2023, 8, 29))]
+            )
         );
     }
 
