@@ -132,8 +132,8 @@ static HALF_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b1/2(\s+(?:a\s+)?
 static AMOUNT_NOTE: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"(?x)
-        \b\d+\s*(?:hours?|hrs?|days?)\b
-        | \b\d+\s*(?:hrs?\s+)?(?:vacation|vac|personal|pers|sick|sic)(?:\s+(?:hours?|hrs?|days?|time))?\b",
+        (?:^|[^\w/:.-])\d+\s*(?:hours?|hrs?|days?)\b
+        | (?:^|[^\w/:.-])\d+\s*(?:hrs?\s+)?(?:vacation|vac|personal|pers|sick|sic)(?:\s+(?:hours?|hrs?|days?|time))?\b",
     )
 });
 static DAY_PART: LazyLock<Regex> = LazyLock::new(|| {
@@ -822,6 +822,18 @@ mod tests {
         assert_eq!(
             read("I will be out Monday 3/28 - Friday 4/1 (40 VAC hours)", date(2022, 3, 16)),
             days(Kind::Vacation, &[(date(2022, 3, 28), date(2022, 4, 1))])
+        );
+    }
+
+    #[test]
+    fn an_amount_note_does_not_swallow_a_date() {
+        assert_eq!(
+            read("I will be taking a day off today (05/24 sick day)", date(2021, 5, 24)),
+            day(Kind::Sick, date(2021, 5, 24))
+        );
+        assert_eq!(
+            read("Taking 7/28-7/30 vacation", date(2021, 7, 14)),
+            days(Kind::Vacation, &[(date(2021, 7, 28), date(2021, 7, 30))])
         );
     }
 
