@@ -129,8 +129,13 @@ static OUT: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"\boff\b|\bout\s+of\s+(?:the\s+)?office\b|\booo\b|\b(?:be|am|i'm|im)\s+(?:out|gone|away)\b"));
 static NOISE: LazyLock<Regex> = LazyLock::new(|| pattern(r"<[^>]*>|\bgood\s+morning\b"));
 static HALF_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b1/2(\s+(?:a\s+)?day)"));
-static AMOUNT_NOTE: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"\b\d+\s*(?:hours?|hrs?|days?|vac|pers|sic)\b|\b\d+\s+(?:vacation|personal|sick)\s+(?:days?|hours?)\b"));
+static AMOUNT_NOTE: LazyLock<Regex> = LazyLock::new(|| {
+    pattern(
+        r"(?x)
+        \b\d+\s*(?:hours?|hrs?|days?)\b
+        | \b\d+\s*(?:hrs?\s+)?(?:vacation|vac|personal|pers|sick|sic)(?:\s+(?:hours?|hrs?|days?|time))?\b",
+    )
+});
 static DAY_PART: LazyLock<Regex> = LazyLock::new(|| {
     pattern(&format!(
         r"(?x)
@@ -153,7 +158,7 @@ static ATOM: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DATE_WORD: LazyLock<Regex> = LazyLock::new(|| {
     pattern(&format!(
-        r"\d+|\b(?:{WEEKDAYS})(?:day)?\b|\b(?:{MONTHS})\b|\b(?:weeks?|months?|next|last|until|till|yesterday|mornings?|afternoons?|evening|half|tmrw|tonight|weekend|noon|hours?)\b"
+        r"\d+|\b(?:{WEEKDAYS})(?:day)?\b|\b(?:{MONTHS})\b|\b(?:weeks?|months?|next|last|until|till|yesterday|return(?:ing|s)?|back\s+on|mornings?|afternoons?|evening|half|tmrw|tonight|weekend|noon|hours?)\b"
     ))
 });
 
@@ -802,6 +807,27 @@ mod tests {
                 &[(date(2023, 8, 28), date(2023, 8, 28)), (date(2023, 8, 29), date(2023, 8, 29))]
             )
         );
+    }
+
+    #[test]
+    fn amounts_with_a_kind_are_notes() {
+        assert_eq!(
+            read("I will be taking off this Friday (4/22, 8 VAC hours)", date(2022, 4, 19)),
+            day(Kind::Vacation, date(2022, 4, 22))
+        );
+        assert_eq!(
+            read("I'll be taking today off as a sick day (8 hour sick)", date(2022, 6, 14)),
+            day(Kind::Sick, date(2022, 6, 14))
+        );
+        assert_eq!(
+            read("I will be out Monday 3/28 - Friday 4/1 (40 VAC hours)", date(2022, 3, 16)),
+            days(Kind::Vacation, &[(date(2022, 3, 28), date(2022, 4, 1))])
+        );
+    }
+
+    #[test]
+    fn a_return_day_is_not_a_day_away() {
+        assert!(read("I will be out one more day tomorrow and return on Wednesday", date(2025, 4, 21)).is_err());
     }
 
     #[test]
