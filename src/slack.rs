@@ -34,12 +34,7 @@ impl Message {
     ///
     /// Panics if `ts` is not a Slack timestamp or the time zone database lacks the lab's zone.
     pub fn posted(&self) -> ZonedDateTime {
-        let seconds = self
-            .ts
-            .split('.')
-            .next()
-            .and_then(|seconds| seconds.parse().ok())
-            .expect("Slack timestamp");
+        let seconds = self.ts.split('.').next().and_then(|seconds| seconds.parse().ok()).expect("Slack timestamp");
         jiff::Timestamp::from_second(seconds)
             .expect("timestamp in range")
             .in_tz(LAB_TIME_ZONE)
@@ -105,9 +100,7 @@ impl Slack {
     ///
     /// Fails when the request fails or Slack answers with an error.
     pub async fn history(&self) -> Result<Vec<Message>> {
-        let raw = self
-            .every("conversations.history", &[("channel", CHANNEL), ("limit", "999")], "messages")
-            .await?;
+        let raw = self.every("conversations.history", &[("channel", CHANNEL), ("limit", "999")], "messages").await?;
         Ok(raw.into_iter().filter_map(RawMessage::written).collect())
     }
 
@@ -161,11 +154,7 @@ impl Slack {
 
     async fn call(&self, method: &str, query: &[(&str, &str)], cursor: &str) -> Result<Value> {
         loop {
-            let request = self
-                .http
-                .get(format!("https://slack.com/api/{method}"))
-                .bearer_auth(&self.token)
-                .query(query);
+            let request = self.http.get(format!("https://slack.com/api/{method}")).bearer_auth(&self.token).query(query);
             let request = if cursor.is_empty() {
                 request
             } else {

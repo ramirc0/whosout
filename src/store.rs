@@ -55,9 +55,7 @@ impl Store {
     ///
     /// Fails when the query fails.
     pub fn messages(&self) -> Result<Vec<Message>> {
-        let mut query = self
-            .db
-            .prepare("SELECT ts, user, text, thread_ts, latest_reply FROM messages ORDER BY ts")?;
+        let mut query = self.db.prepare("SELECT ts, user, text, thread_ts, latest_reply FROM messages ORDER BY ts")?;
         let rows = query.query_map([], |row| {
             Ok(Message {
                 ts: row.get(0)?,

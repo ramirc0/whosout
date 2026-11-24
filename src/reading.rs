@@ -138,6 +138,7 @@ static DAY_PART: LazyLock<Regex> = LazyLock::new(|| {
         | \b(?:(?P<first>first)\s+|(?P<second>second)\s+)?(?P<half>half)(?:[\s-]+(?:a\s+)?day|\s+of\s+the\s+day)?\b"
     ))
 });
+static WHOLE_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b(?:sick|vacation|personal)\s+day\b|\bday\s+off\b"));
 static WEEK: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"\b(?:all\s+)?(?:of\s+)?(?:(?:for\s+)?the\s+rest\s+of\s+)?(?P<which>this|next|the)\s+week\b"));
 static ATOM: LazyLock<Regex> = LazyLock::new(|| {
@@ -164,13 +165,10 @@ static DATE_WORD: LazyLock<Regex> = LazyLock::new(|| {
 pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
     let text = NOISE.replace_all(&text.to_lowercase().replace('’', "'"), " ").into_owned();
     let mut text = HALF_DAY.replace_all(&text, "half$1").into_owned();
+    let whole_text = text.clone();
     let mut doubts = Vec::new();
 
-    let coded: Vec<Kind> = CODED_KINDS
-        .iter()
-        .filter(|(_, regex)| regex.is_match(&text))
-        .map(|(kind, _)| *kind)
-        .collect();
+    let coded: Vec<Kind> = CODED_KINDS.iter().filter(|(_, regex)| regex.is_match(&text)).map(|(kind, _)| *kind).collect();
     let kind = match coded[..] {
         [Kind::Remote] if OFF.is_match(&text) => Err(Doubt::TwoKinds),
         [kind] => Ok(kind),
@@ -213,11 +211,10 @@ pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
         text = blank(&text, [range]);
     }
 
-    let mut which_half: Vec<Part> = claims
-        .iter()
-        .map(|(claim, _)| *claim)
-        .filter(|claim| *claim != Part::Half)
-        .collect();
+    if WHOLE_DAY.is_match(&whole_text) && claims.iter().all(|(claim, _)| *claim != Part::Half) {
+        text = blank(&text, claims.drain(..).map(|(_, range)| range));
+    }
+    let mut which_half: Vec<Part> = claims.iter().map(|(claim, _)| *claim).filter(|claim| *claim != Part::Half).collect();
     which_half.dedup();
     let mut part = Part::Full;
     if let [(first, last)] = days.spans[..]
@@ -246,11 +243,7 @@ pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
     }
 
     match kind {
-        Ok(kind) if doubts.is_empty() => Ok(days
-            .spans
-            .iter()
-            .map(|&(first, last)| Absence { kind, first, last, part })
-            .collect()),
+        Ok(kind) if doubts.is_empty() => Ok(days.spans.iter().map(|&(first, last)| Absence { kind, first, last, part }).collect()),
         Ok(_) => Err(doubts),
         Err(doubt) => {
             doubts.insert(0, doubt);
@@ -778,6 +771,14 @@ mod tests {
             day(Kind::Sick, date(2023, 3, 7))
         );
         assert!(read("I'm at an appointment this morning and working from home in the afternoon", MON_NOV_23).is_err());
+    }
+
+    #[test]
+    fn a_whole_day_with_a_morning_remark_is_a_whole_day() {
+        assert_eq!(
+            read("Not feeling well this morning, taking a sick day (SIC)", MON_NOV_23),
+            day(Kind::Sick, MON_NOV_23)
+        );
     }
 
     #[test]

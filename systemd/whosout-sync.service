@@ -1,0 +1,11 @@
+[Unit]
+Description=whosout: pull the status channel from Slack
+After=network-online.target
+ConditionHost=myhost*
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/Projects/whosout/.env
+ExecStart=%h/.local/bin/whosout sync
+StandardOutput=append:%h/.local/state/whosout/sync.log
+StandardError=append:%h/.local/state/whosout/sync.log

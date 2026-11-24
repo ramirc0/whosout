@@ -96,17 +96,14 @@ async fn pull(slack: &Slack, store: &mut Store) -> Result<(usize, usize)> {
         .filter(|message| message.thread_ts.is_none() && message.latest_reply.is_some())
     {
         if cached_heads.get(head.ts.as_str()) == Some(&&head.latest_reply) {
-            messages.extend(
-                cached
-                    .iter()
-                    .filter(|message| message.thread_ts.as_ref() == Some(&head.ts))
-                    .cloned(),
-            );
+            messages.extend(cached.iter().filter(|message| message.thread_ts.as_ref() == Some(&head.ts)).cloned());
         } else {
             messages.extend(slack.replies(&head.ts).await?);
             threads += 1;
         }
     }
+    messages.sort_by(|a, b| a.ts.cmp(&b.ts));
+    messages.dedup_by(|a, b| a.ts == b.ts);
     let users = slack.users().await?;
     store.replace_cache(&messages, &users)?;
     Ok((messages.len(), threads))

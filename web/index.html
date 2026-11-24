@@ -42,8 +42,9 @@ nav button { font: inherit; color: inherit; background: none; border: 1px solid 
 #roster .weekend { width: 10px; background: var(--weekend); padding: 0; }
 #roster .is-today { box-shadow: inset 2px 0 var(--ink), inset -2px 0 var(--ink); }
 .bar { display: block; height: 22px; line-height: 22px; font-size: 11px; letter-spacing: .03em; overflow: hidden; text-decoration: none; }
-.morning, .afternoon { width: 50%; font-size: 9px; letter-spacing: 0; }
+.morning, .afternoon, .half { width: 50%; font-size: 9px; letter-spacing: 0; }
 .afternoon { margin-left: 50%; }
+.half { margin-left: 25%; }
 .empty { color: var(--faint); padding: 14px 0; }
 
 #review { list-style: none; padding: 0; margin: 0; }
@@ -64,7 +65,7 @@ nav button { font: inherit; color: inherit; background: none; border: 1px solid 
   <span><b class="VAC">VAC</b>vacation</span>
   <span><b class="PERS">PERS</b>personal</span>
   <span><b class="OUT">OUT</b>off, travel or conference</span>
-  <span>Half-width block: morning or afternoon only</span>
+  <span>Half-width block: half a day, set left for morning and right for afternoon</span>
 </div>
 <div id="today"></div>
 <p id="error"></p>

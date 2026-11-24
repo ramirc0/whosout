@@ -58,9 +58,7 @@ pub async fn serve(listen: SocketAddr, dir: PathBuf) -> Result<()> {
         )
         .route("/api/calendar", get(calendar))
         .with_state(dir);
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .with_context(|| format!("cannot bind {listen}"))?;
+    let listener = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("cannot bind {listen}"))?;
     Ok(axum::serve(listener, app).await?)
 }
 
@@ -72,10 +70,7 @@ async fn calendar(State(dir): State<PathBuf>, Query(window): Query<Window>) -> i
 
 fn within(dir: &Path, window: &Window) -> Result<Calendar> {
     let board = Board::load(&Store::open(dir)?, dir)?;
-    let days = board
-        .days()
-        .into_iter()
-        .filter(|day| window.first <= day.date && day.date <= window.last);
+    let days = board.days().into_iter().filter(|day| window.first <= day.date && day.date <= window.last);
     let days = days.map(|day| Block {
         day: day.date,
         kind: day.kind,

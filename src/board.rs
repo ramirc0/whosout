@@ -167,10 +167,7 @@ impl Board {
 
     /// Shows the message with timestamp `ts`, if it is cached.
     pub fn message(&self, ts: &str) -> Option<Shown> {
-        self.messages
-            .iter()
-            .find(|message| message.ts == ts)
-            .map(|message| self.shown(message))
+        self.messages.iter().find(|message| message.ts == ts).map(|message| self.shown(message))
     }
 
     fn verdict(&self, message: &Message) -> Result<Vec<Absence>, Vec<Doubt>> {

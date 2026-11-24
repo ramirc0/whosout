@@ -1,0 +1,15 @@
+[Unit]
+Description=whosout: serve the lab's who-is-out calendar
+After=network-online.target
+# The home directory is shared across nodes, so without this every node's user systemd would start a server.
+ConditionHost=myhost*
+
+[Service]
+ExecStart=%h/.local/bin/whosout serve
+Restart=on-failure
+RestartSec=10
+# The user journal is unreadable on this host, so the log is a file.
+StandardError=append:%h/.local/state/whosout/serve.log
+
+[Install]
+WantedBy=default.target
