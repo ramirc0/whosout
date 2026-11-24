@@ -114,7 +114,7 @@ static CODED_KINDS: LazyLock<[(Kind, Regex); 4]> = LazyLock::new(|| {
     [
         (
             Kind::Remote,
-            pattern(r"\bwfh\b|\bwork(?:ing)?\s+(?:from|at)\s+home\b|\b(?:work(?:ing)?\s+)?remote(?:ly)?\b"),
+            pattern(r"\bwfh\b|\bwork(?:ing)?\s+(?:from|form|at)\s+home\b|\b(?:work(?:ing)?\s+)?remote(?:ly)?\b"),
         ),
         (
             Kind::Sick,
@@ -127,6 +127,7 @@ static CODED_KINDS: LazyLock<[(Kind, Regex); 4]> = LazyLock::new(|| {
 static OFF: LazyLock<Regex> = LazyLock::new(|| pattern(r"\boff\b"));
 static OUT: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"\boff\b|\bout\s+of\s+(?:the\s+)?office\b|\booo\b|\b(?:be|am|i'm|im)\s+(?:out|gone|away)\b"));
+static HALF_DAY_OFF: LazyLock<Regex> = LazyLock::new(|| pattern(r"\bhalf[\s-]+(?:a\s+)?day\b"));
 static NOISE: LazyLock<Regex> = LazyLock::new(|| pattern(r"<[^>]*>|\bgood\s+morning\b"));
 static HALF_DAY: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b1/2(\s+(?:a\s+)?day)"));
 static AMOUNT_NOTE: LazyLock<Regex> = LazyLock::new(|| {
@@ -177,7 +178,7 @@ pub fn read(text: &str, posted: Date) -> Result<Vec<Absence>, Vec<Doubt>> {
     let kind = match coded[..] {
         [Kind::Remote] if OFF.is_match(&text) => Err(Doubt::TwoKinds),
         [kind] => Ok(kind),
-        [] if OUT.is_match(&text) => Ok(Kind::Out),
+        [] if OUT.is_match(&text) || HALF_DAY_OFF.is_match(&text) => Ok(Kind::Out),
         [] => Err(Doubt::NoKind),
         _ => Err(Doubt::TwoKinds),
     };
@@ -834,6 +835,21 @@ mod tests {
         assert_eq!(
             read("Taking 7/28-7/30 vacation", date(2021, 7, 14)),
             days(Kind::Vacation, &[(date(2021, 7, 28), date(2021, 7, 30))])
+        );
+    }
+
+    #[test]
+    fn a_half_day_with_no_code_is_out() {
+        let half = Absence {
+            kind: Kind::Out,
+            first: date(2020, 1, 17),
+            last: date(2020, 1, 17),
+            part: Part::Half,
+        };
+        assert_eq!(read("Taking a half day today", date(2020, 1, 17)), Ok(vec![half]));
+        assert_eq!(
+            read("I will be working form home today", date(2019, 12, 2)),
+            day(Kind::Remote, date(2019, 12, 2))
         );
     }
 
