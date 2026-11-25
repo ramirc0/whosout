@@ -1,0 +1,36 @@
+# Two containers share one data volume: `listen` pulls the channel and `serve` shows the calendar.
+# Settings come from .env beside this file. See .env.example.
+name: whosout
+
+x-channel: &channel
+  SLACK_CHANNEL: ${SLACK_CHANNEL:?set SLACK_CHANNEL in .env}
+  SLACK_WORKSPACE: ${SLACK_WORKSPACE:?set SLACK_WORKSPACE in .env}
+  WHOSOUT_TIME_ZONE: ${WHOSOUT_TIME_ZONE:-UTC}
+
+services:
+  listen:
+    build: .
+    image: whosout
+    command: listen
+    environment:
+      <<: *channel
+      SLACK_USER_TOKEN: ${SLACK_USER_TOKEN:?set SLACK_USER_TOKEN in .env}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:?set SLACK_APP_TOKEN in .env}
+    volumes:
+      - data:/data
+    restart: unless-stopped
+
+  serve:
+    build: .
+    image: whosout
+    command: serve
+    environment:
+      <<: *channel
+    ports:
+      - "127.0.0.1:${WHOSOUT_PORT:-8377}:8377"
+    volumes:
+      - data:/data
+    restart: unless-stopped
+
+volumes:
+  data:
