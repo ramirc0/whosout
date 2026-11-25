@@ -2,6 +2,7 @@
 name = "whosout"
 version = "0.0.0"
 publish = false
+license = "MIT"
 description = "Calendar of who is out, read from a Slack status channel"
 edition = "2024"
 

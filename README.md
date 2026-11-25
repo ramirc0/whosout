@@ -89,6 +89,10 @@ whosout --help
 
 Christian Ramirez
 
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
 ## Acknowledgments
 
 * The page embeds [Hanken Grotesk](https://github.com/marcologous/hanken-grotesk) under the SIL Open Font License. See `web/HankenGrotesk-OFL.txt`.
