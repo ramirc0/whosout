@@ -17,12 +17,12 @@ check:
 run *args:
     cargo run --release -- {{args}}
 
-# Install the binary to ~/.local/bin and the systemd user units, then start the server and the daily timer.
+# Install the binary to ~/.local/bin and the systemd user units, then start the server and the listener.
 install:
     cargo build --release
     mkdir -p ~/.local/bin "{{units}}" ~/.local/state/whosout
     install -m 755 target/release/whosout ~/.local/bin/
     install -m 644 systemd/* "{{units}}"
     systemctl --user daemon-reload
-    systemctl --user enable --now whosout.service whosout-sync.timer
-    systemctl --user restart whosout.service
+    systemctl --user enable whosout.service whosout-listen.service
+    systemctl --user restart whosout.service whosout-listen.service

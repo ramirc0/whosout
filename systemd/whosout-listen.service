@@ -1,0 +1,17 @@
+[Unit]
+Description=whosout: pull the status channel whenever Slack reports a change
+After=network-online.target
+# The home directory is shared across nodes, and Slack sends each event to one open connection.
+# A second listener would steal events from this one.
+ConditionHost=myhost*
+
+[Service]
+EnvironmentFile=%h/Projects/whosout/.env
+ExecStart=%h/.local/bin/whosout listen
+Restart=always
+RestartSec=30
+# The user journal is unreadable on this host, so the log is a file.
+StandardError=append:%h/.local/state/whosout/listen.log
+
+[Install]
+WantedBy=default.target
