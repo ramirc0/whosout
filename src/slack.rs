@@ -138,12 +138,22 @@ impl Slack {
             .collect())
     }
 
+    /// Asks for a WebSocket URL that carries the app's events. The client must hold the app-level token.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the request fails or Slack answers with an error or without a URL.
+    pub async fn socket_url(&self) -> Result<String> {
+        let answer = self.call(reqwest::Method::POST, "apps.connections.open", &[], "").await?;
+        answer["url"].as_str().map(str::to_owned).context("apps.connections.open: no url")
+    }
+
     /// Calls `method` page by page and collects the array under `key`.
     async fn every<T: serde::de::DeserializeOwned>(&self, method: &str, query: &[(&str, &str)], key: &str) -> Result<Vec<T>> {
         let mut items = Vec::new();
         let mut cursor = String::new();
         loop {
-            let mut page = self.call(method, query, &cursor).await?;
+            let mut page = self.call(reqwest::Method::GET, method, query, &cursor).await?;
             items.extend(serde_json::from_value::<Vec<T>>(page[key].take()).with_context(|| format!("{method}: unexpected {key}"))?);
             cursor = page["response_metadata"]["next_cursor"].as_str().unwrap_or_default().to_owned();
             if cursor.is_empty() {
@@ -152,9 +162,13 @@ impl Slack {
         }
     }
 
-    async fn call(&self, method: &str, query: &[(&str, &str)], cursor: &str) -> Result<Value> {
+    async fn call(&self, verb: reqwest::Method, method: &str, query: &[(&str, &str)], cursor: &str) -> Result<Value> {
         loop {
-            let request = self.http.get(format!("https://slack.com/api/{method}")).bearer_auth(&self.token).query(query);
+            let request = self
+                .http
+                .request(verb.clone(), format!("https://slack.com/api/{method}"))
+                .bearer_auth(&self.token)
+                .query(query);
             let request = if cursor.is_empty() {
                 request
             } else {

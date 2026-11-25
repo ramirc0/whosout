@@ -4,15 +4,18 @@ mod board;
 mod reading;
 mod server;
 mod slack;
+mod socket;
 mod store;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use jiff::civil::Date;
+use tokio::sync::Notify;
 
 use crate::board::Board;
 use crate::slack::Slack;
@@ -32,6 +35,8 @@ struct Cli {
 enum Command {
     /// Pull the whole channel from Slack with the token in `SLACK_USER_TOKEN`
     Sync,
+    /// Pull on every change to the channel, pushed by Slack over the socket of `SLACK_APP_TOKEN`
+    Listen,
     /// Serve the calendar page
     Serve {
         /// Address to listen on
@@ -57,16 +62,12 @@ async fn main() -> Result<()> {
         },
     };
     match cli.command {
-        Command::Sync => {
-            let token = std::env::var("SLACK_USER_TOKEN").context("SLACK_USER_TOKEN is not set")?;
-            let mut store = Store::open(&dir)?;
-            let (messages, threads) = pull(&Slack::new(token), &mut store).await?;
-            let board = Board::load(&store, &dir)?;
-            store.replace_days(&board.days())?;
-            println!(
-                "{messages} messages, {threads} threads fetched, {} need review",
-                board.pending().len()
-            );
+        Command::Sync => println!("{}", sync(&Slack::new(token("SLACK_USER_TOKEN")?), &dir).await?),
+        Command::Listen => {
+            let channel = Slack::new(token("SLACK_USER_TOKEN")?);
+            let app = Slack::new(token("SLACK_APP_TOKEN")?);
+            let changed = Notify::new();
+            tokio::try_join!(socket::watch(&app, &changed), pull_when(&changed, &channel, &dir))?;
         }
         Command::Serve { listen } => server::serve(listen, dir).await?,
         Command::Pending { since } => {
@@ -80,6 +81,39 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn token(variable: &str) -> Result<String> {
+    std::env::var(variable).with_context(|| format!("{variable} is not set"))
+}
+
+/// Pulls the channel, rebuilds the day table and returns a one-line summary.
+async fn sync(slack: &Slack, dir: &Path) -> Result<String> {
+    let mut store = Store::open(dir)?;
+    let (messages, threads) = pull(slack, &mut store).await?;
+    let board = Board::load(&store, dir)?;
+    store.replace_days(&board.days())?;
+    Ok(format!(
+        "{messages} messages, {threads} threads fetched, {} need review",
+        board.pending().len()
+    ))
+}
+
+/// Syncs each time `changed` is notified. A failed sync is logged and tried again a minute later.
+async fn pull_when(changed: &Notify, slack: &Slack, dir: &Path) -> Result<()> {
+    loop {
+        changed.notified().await;
+        // A post and its quick edit arrive as two events. Waiting folds them into one pull.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        match sync(slack, dir).await {
+            Ok(summary) => eprintln!("{} {summary}", jiff::Timestamp::now()),
+            Err(error) => {
+                eprintln!("{} sync failed: {error:#}", jiff::Timestamp::now());
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                changed.notify_one();
+            }
+        }
+    }
 }
 
 /// Replaces the cache with the channel's whole history and returns the counts of messages and of threads fetched.
