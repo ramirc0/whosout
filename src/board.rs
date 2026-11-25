@@ -9,7 +9,7 @@ use jiff::civil::{Date, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::reading::{self, Absence, Doubt, Kind, Part};
-use crate::slack::Message;
+use crate::slack::{Channel, Message};
 use crate::store::Store;
 
 /// One person away for one weekday.
@@ -36,7 +36,7 @@ pub struct Shown {
     pub message: String,
     /// The author's name.
     pub person: String,
-    /// The weekday, date and time of posting in the lab's time zone.
+    /// The weekday, date and time of posting in the channel's time zone.
     pub posted: String,
     /// The message text.
     pub text: String,
@@ -78,18 +78,19 @@ pub struct Board {
     messages: Vec<Message>,
     names: HashMap<String, String>,
     resolutions: HashMap<String, Vec<Absence>>,
+    channel: Channel,
     /// When the last sync finished, if one ever did.
     pub synced: Option<String>,
 }
 
 impl Board {
-    /// Loads the cache from `store` and the resolutions from `resolutions.toml` in `dir`.
+    /// Loads the cache of `channel` from `store` and the resolutions from `resolutions.toml` in `dir`.
     ///
     /// # Errors
     ///
     /// Fails when the store cannot be read, or when `resolutions.toml` is malformed, resolves a message
     /// twice, names a message that is not cached, or holds a span that ends before it starts.
-    pub fn load(store: &Store, dir: &Path) -> Result<Self> {
+    pub fn load(store: &Store, dir: &Path, channel: &Channel) -> Result<Self> {
         let messages = store.messages()?;
         let path = dir.join("resolutions.toml");
         let written = match std::fs::read_to_string(&path) {
@@ -116,6 +117,7 @@ impl Board {
             names: store.names()?,
             resolutions,
             synced: store.synced()?,
+            channel: channel.clone(),
         })
     }
 
@@ -175,12 +177,12 @@ impl Board {
             return Ok(absences.clone());
         }
         let Some(parent) = self.parent(message) else {
-            return reading::read(&message.text, message.posted().date());
+            return reading::read(&message.text, message.posted(&self.channel.time_zone).date());
         };
         if parent.user == message.user {
             return Err(vec![Doubt::AuthorReply]);
         }
-        match reading::read(&message.text, message.posted().date()) {
+        match reading::read(&message.text, message.posted(&self.channel.time_zone).date()) {
             Err(doubts) if doubts.contains(&Doubt::NoKind) => Ok(Vec::new()),
             verdict => verdict,
         }
@@ -199,9 +201,9 @@ impl Board {
         Shown {
             message: message.ts.clone(),
             person: self.name(&message.user),
-            posted: message.posted().strftime("%a %Y-%m-%d %H:%M").to_string(),
+            posted: message.posted(&self.channel.time_zone).strftime("%a %Y-%m-%d %H:%M").to_string(),
             text: message.text.clone(),
-            link: message.link(),
+            link: message.link(&self.channel),
         }
     }
 }

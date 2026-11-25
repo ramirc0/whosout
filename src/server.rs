@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::board::{Board, Pending, Shown};
 use crate::reading::{Kind, Part};
+use crate::slack::Channel;
 use crate::store::Store;
 
 #[derive(Deserialize)]
@@ -39,12 +40,12 @@ struct Calendar {
     pending: Vec<Pending>,
 }
 
-/// Serves the calendar on `listen`, reading the data directory `dir` on each request.
+/// Serves the calendar of `channel` on `listen`, reading the data directory `dir` on each request.
 ///
 /// # Errors
 ///
 /// Fails when the address cannot be bound or the server stops with an error.
-pub async fn serve(listen: SocketAddr, dir: PathBuf) -> Result<()> {
+pub async fn serve(listen: SocketAddr, dir: PathBuf, channel: Channel) -> Result<()> {
     let app = axum::Router::new()
         .route("/", get(|| async { Html(include_str!("../web/index.html")) }))
         .route(
@@ -57,19 +58,19 @@ pub async fn serve(listen: SocketAddr, dir: PathBuf) -> Result<()> {
             }),
         )
         .route("/api/calendar", get(calendar))
-        .with_state(dir);
+        .with_state((dir, channel));
     let listener = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("cannot bind {listen}"))?;
     Ok(axum::serve(listener, app).await?)
 }
 
-async fn calendar(State(dir): State<PathBuf>, Query(window): Query<Window>) -> impl IntoResponse {
-    within(&dir, &window)
+async fn calendar(State((dir, channel)): State<(PathBuf, Channel)>, Query(window): Query<Window>) -> impl IntoResponse {
+    within(&dir, &channel, &window)
         .map(Json)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}")))
 }
 
-fn within(dir: &Path, window: &Window) -> Result<Calendar> {
-    let board = Board::load(&Store::open(dir)?, dir)?;
+fn within(dir: &Path, channel: &Channel, window: &Window) -> Result<Calendar> {
+    let board = Board::load(&Store::open(dir)?, dir, channel)?;
     let days = board.days().into_iter().filter(|day| window.first <= day.date && day.date <= window.last);
     let days = days.map(|day| Block {
         day: day.date,

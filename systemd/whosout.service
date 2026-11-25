@@ -1,14 +1,14 @@
+# A systemd user unit. `just install` copies it to ~/.config/systemd/user.
+# Settings come from ~/.config/whosout/env. See .env.example for the variables.
 [Unit]
-Description=whosout: serve the lab's who-is-out calendar
+Description=whosout: serve the who-is-out calendar
 After=network-online.target
-# The home directory is shared across nodes, so without this every node's user systemd would start a server.
-ConditionHost=myhost*
 
 [Service]
+EnvironmentFile=%h/.config/whosout/env
 ExecStart=%h/.local/bin/whosout serve
 Restart=on-failure
 RestartSec=10
-# The user journal is unreadable on this host, so the log is a file.
 StandardError=append:%h/.local/state/whosout/serve.log
 
 [Install]

@@ -4,13 +4,23 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use jiff::ZonedDateTime;
+use jiff::tz::TimeZone;
 use serde::Deserialize;
 use serde_json::Value;
 
-/// The id of `#status-channel`.
-pub const CHANNEL: &str = "C0123456789";
-const WORKSPACE: &str = "https://example.slack.com";
-const LAB_TIME_ZONE: &str = "America/New_York";
+/// The Slack channel the calendar reads, and how to present its messages.
+#[derive(Debug, Clone, clap::Args)]
+pub struct Channel {
+    /// Id of the status channel, such as `C0123456789`
+    #[arg(long = "channel", env = "SLACK_CHANNEL")]
+    pub id: String,
+    /// URL of the Slack workspace, such as <https://example.slack.com>, for links to messages
+    #[arg(long = "workspace", env = "SLACK_WORKSPACE")]
+    pub workspace: String,
+    /// Time zone in which "today" and "tomorrow" are read, such as `America/New_York`
+    #[arg(long, env = "WHOSOUT_TIME_ZONE", default_value = "UTC", value_parser = |name: &str| TimeZone::get(name))]
+    pub time_zone: TimeZone,
+}
 
 /// One person-written message of the channel, top-level or in a thread.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -28,25 +38,23 @@ pub struct Message {
 }
 
 impl Message {
-    /// The moment the message was posted, in the lab's time zone.
+    /// The moment the message was posted, in `zone`.
     ///
     /// # Panics
     ///
-    /// Panics if `ts` is not a Slack timestamp or the time zone database lacks the lab's zone.
-    pub fn posted(&self) -> ZonedDateTime {
+    /// Panics if `ts` is not a Slack timestamp.
+    pub fn posted(&self, zone: &TimeZone) -> ZonedDateTime {
         let seconds = self.ts.split('.').next().and_then(|seconds| seconds.parse().ok()).expect("Slack timestamp");
-        jiff::Timestamp::from_second(seconds)
-            .expect("timestamp in range")
-            .in_tz(LAB_TIME_ZONE)
-            .expect("lab time zone")
+        jiff::Timestamp::from_second(seconds).expect("timestamp in range").to_zoned_datetime(zone.clone())
     }
 
-    /// The message's permalink.
-    pub fn link(&self) -> String {
+    /// The message's permalink in `channel`.
+    pub fn link(&self, channel: &Channel) -> String {
+        let (workspace, channel) = (channel.workspace.trim_end_matches('/'), &channel.id);
         let id = self.ts.replace('.', "");
         match &self.thread_ts {
-            Some(parent) => format!("{WORKSPACE}/archives/{CHANNEL}/p{id}?thread_ts={parent}&cid={CHANNEL}"),
-            None => format!("{WORKSPACE}/archives/{CHANNEL}/p{id}"),
+            Some(parent) => format!("{workspace}/archives/{channel}/p{id}?thread_ts={parent}&cid={channel}"),
+            None => format!("{workspace}/archives/{channel}/p{id}"),
         }
     }
 }
@@ -83,14 +91,16 @@ impl RawMessage {
 pub struct Slack {
     http: reqwest::Client,
     token: String,
+    channel: String,
 }
 
 impl Slack {
     /// Creates a client that authenticates with `token`.
-    pub fn new(token: String) -> Self {
+    pub fn new(token: String, channel: &str) -> Self {
         Self {
             http: reqwest::Client::new(),
             token,
+            channel: channel.to_owned(),
         }
     }
 
@@ -100,7 +110,13 @@ impl Slack {
     ///
     /// Fails when the request fails or Slack answers with an error.
     pub async fn history(&self) -> Result<Vec<Message>> {
-        let raw = self.every("conversations.history", &[("channel", CHANNEL), ("limit", "999")], "messages").await?;
+        let raw = self
+            .every(
+                "conversations.history",
+                &[("channel", self.channel.as_str()), ("limit", "999")],
+                "messages",
+            )
+            .await?;
         Ok(raw.into_iter().filter_map(RawMessage::written).collect())
     }
 
@@ -110,7 +126,7 @@ impl Slack {
     ///
     /// Fails when the request fails or Slack answers with an error.
     pub async fn replies(&self, parent: &str) -> Result<Vec<Message>> {
-        let query = [("channel", CHANNEL), ("ts", parent), ("limit", "999")];
+        let query = [("channel", self.channel.as_str()), ("ts", parent), ("limit", "999")];
         let raw = self.every("conversations.replies", &query, "messages").await?;
         Ok(raw
             .into_iter()

@@ -1,4 +1,4 @@
-set dotenv-path := "../.env"
+set dotenv-load := true
 
 units := env("XDG_CONFIG_HOME", home_directory() / ".config") / "systemd/user"
 
@@ -13,7 +13,7 @@ check:
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
     cargo test
 
-# Run whosout with arguments. The Slack token comes from ../.env.
+# Run whosout with arguments. Settings come from the nearest .env at or above this directory.
 run *args:
     cargo run --release -- {{args}}
 

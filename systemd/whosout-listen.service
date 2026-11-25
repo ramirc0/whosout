@@ -1,16 +1,16 @@
+# A systemd user unit. `just install` copies it to ~/.config/systemd/user.
+# Settings come from ~/.config/whosout/env. See .env.example for the variables.
 [Unit]
 Description=whosout: pull the status channel whenever Slack reports a change
 After=network-online.target
-# The home directory is shared across nodes, and Slack sends each event to one open connection.
-# A second listener would steal events from this one.
-ConditionHost=myhost*
+# Slack sends each event to one open connection, so a second listener would steal events from this one.
+# If several hosts share your home directory, pin this unit to one of them with ConditionHost= in a drop-in.
 
 [Service]
-EnvironmentFile=%h/Projects/whosout/.env
+EnvironmentFile=%h/.config/whosout/env
 ExecStart=%h/.local/bin/whosout listen
 Restart=always
 RestartSec=30
-# The user journal is unreadable on this host, so the log is a file.
 StandardError=append:%h/.local/state/whosout/listen.log
 
 [Install]

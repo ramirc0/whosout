@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::slack::{CHANNEL, Slack};
+use crate::slack::Slack;
 
 const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 
@@ -24,7 +24,7 @@ struct Reaction {
     reconnect: bool,
 }
 
-fn reaction_to(frame: &str) -> Reaction {
+fn reaction_to(frame: &str, channel: &str) -> Reaction {
     #[derive(Deserialize)]
     struct Frame {
         #[serde(rename = "type")]
@@ -41,13 +41,13 @@ fn reaction_to(frame: &str) -> Reaction {
     Reaction {
         acknowledge: frame.envelope_id,
         // Slack does not promise the events sent while no connection was open, so each `hello` pulls.
-        pull: kind == Some("hello") || (kind == Some("events_api") && event["type"] == "message" && event["channel"] == CHANNEL),
+        pull: kind == Some("hello") || (kind == Some("events_api") && event["type"] == "message" && event["channel"] == channel),
         reconnect: kind == Some("disconnect"),
     }
 }
 
 /// Holds a Socket Mode connection, replacing it whenever Slack closes it, and notifies `changed` on each
-/// connect and on each message event of the status channel.
+/// connect and on each message event of `channel`.
 ///
 /// `app` must hold the app-level token. Only one process may watch at a time, because Slack sends each
 /// event to one of the app's open connections.
@@ -55,15 +55,15 @@ fn reaction_to(frame: &str) -> Reaction {
 /// # Errors
 ///
 /// Fails when Slack refuses a connection, the socket breaks, or the socket stays silent after a ping.
-pub async fn watch(app: &Slack, changed: &Notify) -> Result<()> {
+pub async fn watch(app: &Slack, channel: &str, changed: &Notify) -> Result<()> {
     loop {
         let url = app.socket_url().await?;
-        follow(&url, changed, SILENCE_LIMIT).await?;
+        follow(&url, channel, changed, SILENCE_LIMIT).await?;
     }
 }
 
 /// Follows one connection until Slack closes it.
-async fn follow(url: &str, changed: &Notify, silence_limit: Duration) -> Result<()> {
+async fn follow(url: &str, channel: &str, changed: &Notify, silence_limit: Duration) -> Result<()> {
     let (mut socket, _) = tokio_tungstenite::connect_async(url).await.context("cannot connect to the socket")?;
     let (mut events, mut pulls) = (0, 0);
     let mut pinged = false;
@@ -82,7 +82,7 @@ async fn follow(url: &str, changed: &Notify, silence_limit: Duration) -> Result<
         let Message::Text(text) = frame else {
             continue;
         };
-        let reaction = reaction_to(&text);
+        let reaction = reaction_to(&text, channel);
         if let Some(envelope_id) = reaction.acknowledge {
             let acknowledgment = json!({ "envelope_id": envelope_id }).to_string();
             socket.send(Message::Text(acknowledgment.into())).await.context("cannot acknowledge")?;
@@ -110,6 +110,8 @@ mod tests {
 
     use super::*;
 
+    const CHANNEL: &str = "C0STATUS";
+
     fn event(envelope_id: &str, channel: &str, subtype: Option<&str>) -> String {
         json!({
             "type": "events_api",
@@ -127,28 +129,37 @@ mod tests {
             reconnect: false,
         };
         assert_eq!(
-            reaction_to(r#"{"type":"hello","num_connections":1}"#),
+            reaction_to(r#"{"type":"hello","num_connections":1}"#, CHANNEL),
             Reaction {
                 pull: true,
                 ..Reaction::default()
             }
         );
-        assert_eq!(reaction_to(&event("a", CHANNEL, None)), acknowledged("a", true));
-        assert_eq!(reaction_to(&event("b", CHANNEL, Some("message_changed"))), acknowledged("b", true));
-        assert_eq!(reaction_to(&event("c", CHANNEL, Some("message_deleted"))), acknowledged("c", true));
-        assert_eq!(reaction_to(&event("d", "C0OTHER", None)), acknowledged("d", false));
+        assert_eq!(reaction_to(&event("a", CHANNEL, None), CHANNEL), acknowledged("a", true));
         assert_eq!(
-            reaction_to(r#"{"type":"events_api","envelope_id":"e","payload":{"event":{"type":"reaction_added"}}}"#),
+            reaction_to(&event("b", CHANNEL, Some("message_changed")), CHANNEL),
+            acknowledged("b", true)
+        );
+        assert_eq!(
+            reaction_to(&event("c", CHANNEL, Some("message_deleted")), CHANNEL),
+            acknowledged("c", true)
+        );
+        assert_eq!(reaction_to(&event("d", "C0OTHER", None), CHANNEL), acknowledged("d", false));
+        assert_eq!(
+            reaction_to(
+                r#"{"type":"events_api","envelope_id":"e","payload":{"event":{"type":"reaction_added"}}}"#,
+                CHANNEL
+            ),
             acknowledged("e", false)
         );
         assert_eq!(
-            reaction_to(r#"{"type":"disconnect","reason":"refresh_requested"}"#),
+            reaction_to(r#"{"type":"disconnect","reason":"refresh_requested"}"#, CHANNEL),
             Reaction {
                 reconnect: true,
                 ..Reaction::default()
             }
         );
-        assert_eq!(reaction_to("not json"), Reaction::default());
+        assert_eq!(reaction_to("not json", CHANNEL), Reaction::default());
     }
 
     /// Serves one WebSocket connection on a free local port with `serve` and returns its URL.
@@ -181,7 +192,7 @@ mod tests {
         .await;
         let changed = Notify::new();
 
-        follow(&url, &changed, Duration::from_secs(5)).await.unwrap();
+        follow(&url, CHANNEL, &changed, Duration::from_secs(5)).await.unwrap();
 
         assert_eq!(acknowledgments.recv().await.unwrap(), r#"{"envelope_id":"first"}"#);
         assert_eq!(acknowledgments.recv().await.unwrap(), r#"{"envelope_id":"second"}"#);
@@ -198,7 +209,7 @@ mod tests {
         .await;
         let changed = Notify::new();
 
-        follow(&url, &changed, Duration::from_secs(5)).await.unwrap();
+        follow(&url, CHANNEL, &changed, Duration::from_secs(5)).await.unwrap();
 
         assert!(tokio::time::timeout(Duration::from_millis(50), changed.notified()).await.is_err());
     }
@@ -212,7 +223,7 @@ mod tests {
         })
         .await;
 
-        let error = follow(&url, &Notify::new(), Duration::from_millis(50)).await.unwrap_err();
+        let error = follow(&url, CHANNEL, &Notify::new(), Duration::from_millis(50)).await.unwrap_err();
 
         assert!(was_pinged.await.unwrap());
         assert!(error.to_string().contains("silent"), "{error}");

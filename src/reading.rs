@@ -11,7 +11,7 @@ use jiff::civil::{Date, Weekday};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-/// The class of an absence, named by the lab's letter codes.
+/// The class of an absence, named by its letter code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Kind {
     /// Working from home.
@@ -776,7 +776,13 @@ mod tests {
             read("Good morning, I'm taking another sick day today (3/7)", date(2023, 3, 7)),
             day(Kind::Sick, date(2023, 3, 7))
         );
-        assert!(read("I'm at an appointment this morning and working from home in the afternoon", MON_NOV_23).is_err());
+        assert!(
+            read(
+                "I'm at an appointment this morning and working from home in the afternoon",
+                MON_NOV_23
+            )
+            .is_err()
+        );
     }
 
     #[test]
